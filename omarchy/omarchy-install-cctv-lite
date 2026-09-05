@@ -84,7 +84,7 @@ EOF
     omarchy-notification-send -g 󰄀 "CCTV Lite installed" "Launch from the bar plugin or run cctv-lite" || true
   fi
   ok "Fertig. Start: cctv-lite"
-  ok "Plugin: omarchy plugin add https://github.com/cytracon/omarchy-cctv-lite.git --enable"
+  ok "Bar plugin enabled with the install."
   ok "Docs: ${WEB}"
 }
 

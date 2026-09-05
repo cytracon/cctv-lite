@@ -4,7 +4,7 @@
 
 GTK4 + libadwaita + GStreamer.
 
-The Omarchy bar plugin is a separate repository: [cytracon/omarchy-cctv-lite](https://github.com/cytracon/omarchy-cctv-lite).
+`omarchy install cctv-lite` installs the viewer **and** enables the bar plugin ([cytracon/omarchy-cctv-lite](https://github.com/cytracon/omarchy-cctv-lite)).
 
 ## Privacy
 
