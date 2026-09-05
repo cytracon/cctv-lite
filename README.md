@@ -1,6 +1,8 @@
 # CCTV Lite
 
-Lightweight multi-camera RTSP viewer for **Omarchy** (Arch Linux + Hyprland). GTK4 + libadwaita + GStreamer.
+**What it is.** CCTV Lite is a live multi-camera viewer for a local NVR on **Omarchy** (Arch Linux + Hyprland). Point it at a Hikvision-style recorder over RTSP and watch cameras in a grid (sub or main stream, named layouts). It is a lightweight GTK viewer, not a full NVR.
+
+GTK4 + libadwaita + GStreamer.
 
 The Omarchy bar plugin is a separate repository: [cytracon/omarchy-cctv-lite](https://github.com/cytracon/omarchy-cctv-lite).
 
