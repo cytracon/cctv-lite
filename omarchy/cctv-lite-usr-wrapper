@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Replaces leftover Ubuntu /usr/bin/cctv-lite on Omarchy.
+set -euo pipefail
+LOCAL="${HOME}/.local/bin/cctv-lite"
+if [[ -x "$LOCAL" ]]; then
+  exec "$LOCAL" "$@"
+fi
+echo "cctv-lite: Omarchy build not found at $LOCAL" >&2
+echo "Install with:  omarchy install cctv-lite" >&2
+exit 1

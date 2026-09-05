@@ -1,0 +1,15 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=CCTV Lite
+GenericName=Camera Viewer
+Comment=Lightweight multi-camera RTSP viewer for Omarchy
+Exec=cctv-lite
+Icon=com.bbachmann.cctv-lite
+Terminal=false
+Categories=AudioVideo;Video;Monitor;Security;
+Keywords=CCTV;RTSP;Camera;Surveillance;Hikvision;
+StartupNotify=true
+StartupWMClass=com.bbachmann.cctv-lite
+DBusActivatable=false
+X-GNOME-UsesNotifications=false

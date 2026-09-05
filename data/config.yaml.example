@@ -1,0 +1,18 @@
+# Example only. Copy to ~/.config/cctv-lite/config.yaml and fill in locally.
+# Never commit a real host, password, or camera list.
+host: ""
+port: 554
+http_host: ""
+http_port: 80
+http_scheme: http
+user: ""
+password: ""
+path_template: /ISAPI/Streaming/channels/{channel}
+cameras: []
+layouts:
+  - name: Grid
+    cols: 2
+    rows: 2
+    quality: sub
+    cameras: []
+active_layout: 0
