@@ -98,9 +98,9 @@ class CameraCell(Gtk.Overlay):
         self.set_vexpand(True)
         self.set_cursor(Gdk.Cursor.new_from_name("pointer"))
 
-        self.player.picture.set_hexpand(True)
-        self.player.picture.set_vexpand(True)
-        self.set_child(self.player.picture)
+        self.player.widget.set_hexpand(True)
+        self.player.widget.set_vexpand(True)
+        self.set_child(self.player.widget)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         box.set_halign(Gtk.Align.START)
@@ -188,6 +188,8 @@ class CctvWindow(Adw.ApplicationWindow):
         title = Adw.WindowTitle(title="CCTV Lite", subtitle=f"v{__version__}")
         header.set_title_widget(title)
         root.append(header)
+        self.header = header
+        self._detail_took_fullscreen = False
 
         self.layout_model = Gtk.StringList()
         for lay in config.layouts():
@@ -235,8 +237,9 @@ class CctvWindow(Adw.ApplicationWindow):
         self.stack = Gtk.Stack()
         self.stack.set_hexpand(True)
         self.stack.set_vexpand(True)
-        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
-        self.stack.set_transition_duration(120)
+        # Instant switch: a crossfade snapshot of the 360p grid looks muddy
+        # when opening the main-stream large view.
+        self.stack.set_transition_type(Gtk.StackTransitionType.NONE)
         root.append(self.stack)
 
         self.grid_host = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -631,6 +634,15 @@ class CctvWindow(Adw.ApplicationWindow):
         main_url = self.config.url_for_camera(cam, "main")
         self._fullscreen_cam = player.cam_id
         self.stack.set_visible_child_name("single")
+        try:
+            self.header.set_visible(False)
+        except Exception:
+            pass
+        if not self.is_fullscreen():
+            self._detail_took_fullscreen = True
+            self.fullscreen()
+        else:
+            self._detail_took_fullscreen = False
 
         detail = CameraPlayer(
             cam_id=f"{cam.id}-detail",
@@ -638,19 +650,10 @@ class CctvWindow(Adw.ApplicationWindow):
             url=main_url,
             rtsp_opts=self.config.rtsp(),
         )
-        try:
-            detail.build()
-            detail.play()
-        except Exception as e:
-            log.error("detail start failed: %s", e)
-            self._set_detail_placeholder(f"{cam.name}: start failed — {e}")
-            return
-        self._detail_player = detail
-
         overlay = Gtk.Overlay()
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
-        overlay.set_child(detail.picture)
+        overlay.set_child(detail.widget)
         label = Gtk.Label(
             label=f"{cam.name}  ·  main  ·  click to return", xalign=0
         )
@@ -669,6 +672,28 @@ class CctvWindow(Adw.ApplicationWindow):
         hint.set_can_target(False)
         overlay.add_overlay(hint)
         self.single_picture_box.append(overlay)
+        self._detail_player = detail
+
+        # Build/play after the widget is in the tree so gtk4paintablesink
+        # sees a real allocation instead of scaling a tiny first frame.
+        try:
+            detail.build()
+        except Exception as e:
+            log.error("detail start failed: %s", e)
+            self._set_detail_placeholder(f"{cam.name}: start failed — {e}")
+            return
+
+        def _start(_detail=detail):
+            if self._detail_player is not _detail:
+                return False
+            try:
+                _detail._sync_window_size()
+                _detail.play()
+            except Exception as e:
+                log.error("detail play failed: %s", e)
+            return False
+
+        GLib.timeout_add(50, _start)
 
     def _set_detail_placeholder(self, text: str) -> None:
         child = self.single_picture_box.get_first_child()
@@ -686,6 +711,14 @@ class CctvWindow(Adw.ApplicationWindow):
         self._fullscreen_cam = None
         # Only tear down the extra main-stream detail player
         self._clear_detail()
+        try:
+            self.header.set_visible(True)
+        except Exception:
+            pass
+        if self._detail_took_fullscreen:
+            self._detail_took_fullscreen = False
+            if self.is_fullscreen():
+                self.unfullscreen()
         self.stack.set_visible_child_name("grid")
         for cell in self.cells.values():
             cell.set_selected(False)

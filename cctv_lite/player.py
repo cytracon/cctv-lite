@@ -54,11 +54,33 @@ class CameraPlayer:
         self._reconnect_id = None
         self._wanted_playing = False
         self._status = "idle"
+        self._glbin: Gst.Element | None = None
         self.picture = Gtk.Picture()
         self.picture.set_content_fit(Gtk.ContentFit.CONTAIN)
         self.picture.set_hexpand(True)
         self.picture.set_vexpand(True)
         self.picture.add_css_class("camera-picture")
+        self.picture.connect("notify::width", self._sync_window_size)
+        self.picture.connect("notify::height", self._sync_window_size)
+        # GTK 4.14+: compositor presents the video texture directly.
+        # Without this, GSK rasterizes I420 frames and the large view looks muddy.
+        if hasattr(Gtk, "GraphicsOffload"):
+            off = Gtk.GraphicsOffload(child=self.picture)
+            try:
+                off.set_enabled(Gtk.GraphicsOffloadEnabled.ENABLED)
+            except Exception:
+                pass
+            try:
+                off.set_black_background(True)
+            except Exception:
+                pass
+            off.set_hexpand(True)
+            off.set_vexpand(True)
+            self.widget: Gtk.Widget = off
+        else:
+            self.widget = self.picture
+        self.widget.connect("notify::width", self._sync_window_size)
+        self.widget.connect("notify::height", self._sync_window_size)
 
     @property
     def status(self) -> str:
@@ -74,6 +96,26 @@ class CameraPlayer:
 
     def set_name(self, name: str) -> None:
         self.name = name
+
+    def _sync_window_size(self, *_args) -> None:
+        sink = self._sink
+        if sink is None:
+            return
+        try:
+            scale = max(1, int(self.picture.get_scale_factor()))
+            w = max(0, int(self.picture.get_width()) * scale)
+            h = max(0, int(self.picture.get_height()) * scale)
+        except Exception:
+            return
+        if w <= 1 or h <= 1:
+            return
+        try:
+            if int(sink.get_property("window-width") or 0) != w:
+                sink.set_property("window-width", w)
+            if int(sink.get_property("window-height") or 0) != h:
+                sink.set_property("window-height", h)
+        except Exception:
+            pass
 
     def _drop_pipeline(self) -> None:
         """NULL + drop refs without waiting (non-blocking)."""
@@ -91,6 +133,7 @@ class CameraPlayer:
         pipe = self._pipeline
         self._pipeline = None
         self._sink = None
+        self._glbin = None
         self._bus = None
         try:
             self.picture.set_paintable(None)
@@ -126,9 +169,42 @@ class CameraPlayer:
             sink.set_property("sync", False)
         except Exception:
             pass
+        try:
+            sink.set_property("qos", False)
+        except Exception:
+            pass
+        try:
+            # Keep native decoder size; GTK/compositor scales the texture.
+            sink.set_property("reconfigure-on-window-resize", 0)
+        except Exception:
+            pass
+
+        # Convert to BGRA before the sink. glsinkbin would negotiate YU12
+        # DMABuf; Hyprland/GTK then often composites the 4:2:0 chroma plane
+        # (half resolution), which makes the large view look as soft as the
+        # 360p grid. XRGB/BGRA matches the compositor format.
+        video_sink: Gst.Element = sink
+        glbin = None
+        conv = Gst.ElementFactory.make("videoconvert", f"vconv-{self.cam_id}")
+        capsf = Gst.ElementFactory.make("capsfilter", f"vcaps-{self.cam_id}")
+        if conv is not None and capsf is not None:
+            capsf.set_property(
+                "caps", Gst.Caps.from_string("video/x-raw,format=BGRA")
+            )
+            vbin = Gst.Bin.new(f"vsink-{self.cam_id}")
+            vbin.add(conv)
+            vbin.add(capsf)
+            vbin.add(sink)
+            if conv.link(capsf) and capsf.link(sink):
+                gpad = Gst.GhostPad.new("sink", conv.get_static_pad("sink"))
+                gpad.set_active(True)
+                vbin.add_pad(gpad)
+                video_sink = vbin
+            else:
+                log.error("BGRA sink link failed for %s", self.cam_id)
 
         pipeline.set_property("uri", self.url)
-        pipeline.set_property("video-sink", sink)
+        pipeline.set_property("video-sink", video_sink)
 
         if bool(self.opts.get("mute_audio", True)):
             fakesink = Gst.ElementFactory.make("fakesink", f"asink-{self.cam_id}")
@@ -140,9 +216,10 @@ class CameraPlayer:
             except Exception:
                 pass
 
+        detail = self.cam_id.endswith("-detail")
         for prop, value in (
-            ("buffer-size", 256 * 1024),
-            ("buffer-duration", 200 * Gst.MSECOND),
+            ("buffer-size", (2 * 1024 * 1024) if detail else 256 * 1024),
+            ("buffer-duration", (400 * Gst.MSECOND) if detail else 200 * Gst.MSECOND),
         ):
             try:
                 pipeline.set_property(prop, value)
@@ -173,6 +250,17 @@ class CameraPlayer:
 
         try:
             paintable = sink.get_property("paintable")
+            try:
+                paintable.set_property("force-aspect-ratio", True)
+            except Exception:
+                pass
+            try:
+                paintable.set_property("use-scaling-filter", True)
+                # Nearest for 1:1 large view; linear for the small grid tiles.
+                filt = 1 if self.cam_id.endswith("-detail") else 0
+                paintable.set_property("scaling-filter", filt)
+            except Exception:
+                pass
             self.picture.set_paintable(paintable)
         except Exception:
             log.exception("could not attach paintable for %s", self.cam_id)
@@ -183,9 +271,11 @@ class CameraPlayer:
 
         self._pipeline = pipeline
         self._sink = sink
+        self._glbin = glbin
         self._bus = bus
         self._bus_handler_id = handler_id
         self._set_status("ready")
+        self._sync_window_size()
 
     def play(self) -> None:
         self._wanted_playing = True
@@ -279,6 +369,25 @@ class CameraPlayer:
         self._set_status(f"reconnect in {delay:.0f}s")
         self._reconnect_id = GLib.timeout_add(delay_ms, _re)
 
+    def _log_negotiated_caps(self) -> None:
+        sink = self._sink
+        if sink is None:
+            return
+        try:
+            pad = sink.get_static_pad("sink")
+            caps = pad.get_current_caps() if pad is not None else None
+            log.info(
+                "%s caps %s window=%sx%s widget=%sx%s",
+                self.cam_id,
+                caps.to_string() if caps is not None else "none",
+                sink.get_property("window-width"),
+                sink.get_property("window-height"),
+                self.picture.get_width(),
+                self.picture.get_height(),
+            )
+        except Exception:
+            log.exception("caps log failed for %s", self.cam_id)
+
     def _on_bus_message(self, _bus, message) -> None:
         # Guard: pipeline may already be dropped
         if self._pipeline is None and message.src is not None:
@@ -310,6 +419,8 @@ class CameraPlayer:
                 _old, new, _pending = message.parse_state_changed()
                 if new == Gst.State.PLAYING:
                     self._set_status("playing")
+                    self._sync_window_size()
+                    self._log_negotiated_caps()
                 elif new == Gst.State.PAUSED and self._wanted_playing:
                     self._set_status("buffering")
         elif t == Gst.MessageType.BUFFERING:
