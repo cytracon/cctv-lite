@@ -76,6 +76,23 @@ else
   echo "==> No config yet. Copy data/config.yaml.example to $CFG and fill in locally."
 fi
 
+WRAP="$ROOT/omarchy/cctv-lite-usr-wrapper"
+if [[ -x "$WRAP" ]]; then
+  leftover=0
+  [[ -d /usr/lib/cctv-lite ]] && leftover=1
+  if [[ -e /usr/bin/cctv-lite ]] && ! grep -q 'Omarchy build' /usr/bin/cctv-lite 2>/dev/null; then
+    leftover=1
+  fi
+  if (( leftover )); then
+    echo "==> Replacing leftover Ubuntu CCTV Lite under /usr…"
+    if pkexec bash -c "rm -rf /usr/lib/cctv-lite; rm -f /usr/share/applications/com.bbachmann.cctv-lite.desktop; install -m 755 '$WRAP' /usr/bin/cctv-lite"; then
+      echo "==> /usr/bin/cctv-lite now launches ~/.local"
+    else
+      echo "==> skipped (no polkit auth). sudo install -m 755 $WRAP /usr/bin/cctv-lite"
+    fi
+  fi
+fi
+
 echo
 echo "Installed:"
 echo "  binary : $BIN_DIR/${PKG_NAME}"
