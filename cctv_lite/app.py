@@ -164,6 +164,9 @@ class CctvWindow(Adw.ApplicationWindow):
         self._start_idle_ids: list[int] = []
         self._settings_win: SettingsWindow | None = None
         self._suppress_layout_signal = False
+        self._background_suspended = False
+        self._state_surface = None
+        self._state_handler = None
 
         try:
             self.set_icon_name(ICON_NAME)
@@ -270,6 +273,8 @@ class CctvWindow(Adw.ApplicationWindow):
         self._install_shortcuts()
         self.connect("map", lambda *_: self._on_map())
         self.connect("unmap", lambda *_: self._on_unmap())
+        self.connect("realize", lambda *_: self._watch_surface_state())
+        self.connect("unrealize", lambda *_: self._unwatch_surface_state())
 
         self.build_layout()
         # Name sync in a worker thread — never block the GTK main loop with curl probes
@@ -404,6 +409,8 @@ class CctvWindow(Adw.ApplicationWindow):
             self._start_players_staggered()
 
     def _on_map(self) -> None:
+        if self._background_suspended:
+            return
         if self.config.ui().get("pause_when_unmapped", True):
             if self._fullscreen_cam and self._detail_player:
                 if self._detail_player.status in ("paused", "stopped", "idle", "error"):
@@ -420,10 +427,40 @@ class CctvWindow(Adw.ApplicationWindow):
 
     def _on_unmap(self) -> None:
         if self.config.ui().get("pause_when_unmapped", True):
+            self._clear_start_timers()
             for p in self.players.values():
                 p.stop()
             if self._detail_player:
                 self._detail_player.stop()
+
+    def _watch_surface_state(self) -> None:
+        self._unwatch_surface_state()
+        surface = self.get_surface()
+        if surface is not None and hasattr(surface, "get_state"):
+            self._state_surface = surface
+            self._state_handler = surface.connect("notify::state", self._on_surface_state)
+            self._on_surface_state(surface)
+
+    def _unwatch_surface_state(self) -> None:
+        if self._state_surface is not None and self._state_handler is not None:
+            self._state_surface.disconnect(self._state_handler)
+        self._state_surface = None
+        self._state_handler = None
+
+    def _on_surface_state(self, surface, *_args) -> None:
+        # On Wayland a window can stay mapped while the compositor suspends it.
+        # map/unmap alone therefore misses minimized or suspended windows.
+        flags = Gdk.ToplevelState.MINIMIZED | getattr(Gdk.ToplevelState, "SUSPENDED", 0)
+        suspended = bool(surface.get_state() & flags) and self.config.ui().get("pause_when_unmapped", True)
+        if suspended == self._background_suspended:
+            return
+        self._background_suspended = suspended
+        if suspended:
+            log.info("Window suspended: stopping camera streams")
+            self._on_unmap()
+        elif self.get_mapped():
+            log.info("Window visible again: resuming camera streams")
+            self._on_map()
 
     def _on_layout_changed(self, dropdown, *_):
         if self._suppress_layout_signal:
@@ -557,6 +594,8 @@ class CctvWindow(Adw.ApplicationWindow):
 
     def _start_players_staggered(self) -> None:
         self._clear_start_timers()
+        if self._background_suspended:
+            return
         stagger = int(self.config.rtsp().get("stagger_ms") or 150)
         for i, player in enumerate(self.players.values()):
 
@@ -573,6 +612,8 @@ class CctvWindow(Adw.ApplicationWindow):
     def reconnect_all(self) -> None:
         """Full rebuild of every grid pipeline (fresh RTSP sessions)."""
         self._clear_start_timers()
+        if self._background_suspended:
+            return
         for p in self.players.values():
             p.stop()
         self._start_players_staggered_hard()
@@ -580,6 +621,8 @@ class CctvWindow(Adw.ApplicationWindow):
     def _start_players_staggered_hard(self) -> None:
         """Staggered hard_restart (new RTSP session per camera)."""
         self._clear_start_timers()
+        if self._background_suspended:
+            return
         stagger = int(self.config.rtsp().get("stagger_ms") or 150)
         for i, player in enumerate(self.players.values()):
 
@@ -684,7 +727,7 @@ class CctvWindow(Adw.ApplicationWindow):
             return
 
         def _start(_detail=detail):
-            if self._detail_player is not _detail:
+            if self._background_suspended or self._detail_player is not _detail:
                 return False
             try:
                 _detail._sync_window_size()
